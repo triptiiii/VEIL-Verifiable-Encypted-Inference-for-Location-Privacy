@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VEIL — Privacy-Preserving kNN</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <!-- Leaflet JS + CSS are now imported from the bundled npm package in
+       MapView.jsx (import L from 'leaflet'; import 'leaflet/dist/leaflet.css')
+       instead of relying on a CDN <script> tag that was never actually
+       present here. The map previously never rendered because MapView.jsx
+       looked for window.L, which nothing on this page ever defined. -->
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #05080f; color: #c8d8ef; font-family: 'Inter', sans-serif; overflow-x: hidden; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: #05080f; }
+    ::-webkit-scrollbar-thumb { background: #1a2840; border-radius: 2px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+</html>
