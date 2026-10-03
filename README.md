@@ -32,17 +32,24 @@ veil/
     ├── tailwind.config.js
     └── src/
         ├── App.jsx                 # Root layout + state
-        ├── index.css               # TailwindCSS + VEIL theme
+        ├── index.css                # TailwindCSS + VEIL theme
         ├── services/
-        │   └── api.js              # Typed fetch wrappers for all backend calls
+        │   ├── api.js               # Typed fetch wrappers for all backend calls
+        │   └── gcProtocol.js        # Client-side GC protocol — encode, OT-select, evaluate
         └── components/
-            ├── Header.jsx          # Top bar with mode indicator
-            ├── ControlPanel.jsx    # Left sidebar: mode, k, categories, GPS, query
-            ├── MapView.jsx         # Dark Leaflet map with OSM tiles + POI markers
-            ├── ThreeScene.jsx      # Three.js 3D floating marker visualization
-            ├── ResultPanel.jsx     # kNN results + latency breakdown + Merkle status
-            ├── ComplexityPanel.jsx # Complexity analysis table + gate breakdown
-            └── StatusBar.jsx       # Bottom status bar
+            ├── Header.jsx           # Top bar with mode indicator
+            ├── LandingPage.jsx      # Pre-app landing/intro page
+            ├── ControlPanel.jsx     # Left sidebar: mode, k, categories, GPS, query
+            ├── MapView.jsx          # Dark Leaflet map with OSM tiles + POI markers
+            ├── ThreeScene.jsx       # Three.js 3D floating marker visualization
+            ├── ResultPanel.jsx      # kNN results + latency breakdown + Merkle status
+            ├── ComplexityPanel.jsx  # Complexity analysis table + gate breakdown
+            └── StatusBar.jsx        # Bottom status bar
+
+test/                                # Automated test suite + benchmark (outside backend/frontend)
+├── package.json                     # { "type": "module" }
+├── run_tests.mjs                    # Full correctness/privacy/candidate/benchmark test suite
+└── benchmark.mjs                    # Deterministic plain-vs-secure benchmark (Phase 5)
 ```
 
 ---
@@ -70,6 +77,14 @@ npm run dev
 ```
 
 Open http://localhost:5173 in your browser.
+
+### 3. Automated tests + benchmark
+```bash
+cd test
+npm install    # no dependencies beyond Node itself — installs nothing
+node run_tests.mjs
+node benchmark.mjs --lat 12.9716 --lng 77.5946 --k 5 --categories hospital
+```
 
 ---
 
@@ -266,22 +281,119 @@ Data is cached for 30 minutes server-side; refresh via `GET /api/dataset?refresh
 
 ## 🔌 API Reference
 
-| Method | Endpoint           | Description                               |
-|--------|--------------------|-------------------------------------------|
-| GET    | /api/health        | Server status and session info            |
-| GET    | /api/dataset       | Fetch/return POI dataset from OSM         |
-| POST   | /api/knn/plain     | Plain (non-private) kNN query             |
-| POST   | /api/knn/secure    | VEIL secure kNN (GC + OT + Merkle)       |
-| GET    | /api/complexity    | Complexity analysis for current dataset   |
-| POST   | /api/verify        | Verify a Merkle proof                     |
-| GET    | /api/ot/benchmark  | Benchmark OT protocol performance         |
+| Method | Endpoint            | Description                                                    |
+|--------|---------------------|------------------------------------------------------------------|
+| GET    | /api/health         | Server status and session info                                  |
+| GET    | /api/dataset        | Fetch/return POI dataset from OSM                                |
+| POST   | /api/knn/plain      | Plain (non-private) kNN query — **receives lat/lng**             |
+| POST   | /api/candidates     | Phase 4: location-aware candidate discovery — **receives lat/lng, coarsened server-side to ~1.1km before use** |
+| POST   | /api/gc/init        | Secure path step 1 — garble circuit. Accepts `{k, categories, candidateIds}`. **Rejects lat/lng.** |
+| POST   | /api/gc/resolve     | Secure path step 2 — resolve result ids to POI data + Merkle proofs. Accepts `{sessionId, resultIds}`. **Rejects lat/lng.** |
+| POST   | /api/knn/secure     | **Deprecated — returns 410 Gone.** Superseded by candidates→gc/init→gc/resolve. |
+| GET    | /api/complexity     | Theoretical complexity analysis for current dataset              |
+| POST   | /api/verify         | Verify a single Merkle proof                                     |
+| GET    | /api/ot/benchmark   | Benchmark the (simulated) OT protocol                            |
+| POST   | /api/benchmark      | Phase 5: real, measured plain-vs-secure timing comparison — **benchmarking utility, receives lat/lng, separate from the live query path** |
+| GET    | /api/poi/:id        | Look up a single POI by id                                       |
 
-### Example: Secure kNN Query
+### The live secure query path (what the app actually does)
+
+```
+1. POST /api/candidates   { latitude, longitude, categories }
+   → server coarsens location to ~1.1km, ranks dataset by distance,
+     returns { candidateIds, candidates }
+
+2. POST /api/gc/init       { k, categories, candidateIds }   ← NO coordinates
+   → server garbles a circuit over exactly those candidates,
+     returns { sessionId, garbledGates, clientWirePairs, ... }
+
+3. [Client evaluates the circuit locally — SubtleCrypto AES-CBC, no network]
+
+4. POST /api/gc/resolve    { sessionId, resultIds }          ← NO coordinates
+   → server returns POI metadata + Merkle proofs for those ids
+```
+
+### Example: Plain (non-private) query
 ```bash
-curl -X POST http://localhost:3001/api/knn/secure \
+curl -X POST http://localhost:3001/api/knn/plain \
   -H "Content-Type: application/json" \
   -d '{"latitude": 12.9716, "longitude": 77.5946, "k": 5, "categories": ["hospital", "cafe"]}'
 ```
+
+### Example: Candidate discovery (Phase 4)
+```bash
+curl -X POST http://localhost:3001/api/candidates \
+  -H "Content-Type: application/json" \
+  -d '{"latitude": 12.9716, "longitude": 77.5946, "categories": ["hospital"]}'
+```
+
+---
+
+## 📍 Candidate Discovery vs Secure Computation (Phase 4)
+
+**The bug this replaced:** the secure circuit used to be built from
+`pois.filter(category).slice(0, MAX_SECURE_POIS)` — the first N POIs in
+whatever arbitrary order OSM/Overpass returned them in, with *zero*
+relationship to the querying user's location. A user could receive distant
+POIs while genuinely closer ones were never considered, simply because they
+weren't early in that array.
+
+**The fix:** `POST /api/candidates` ranks the full cached dataset by actual
+distance from the user's location and returns the nearest matches. Those
+candidate ids — not raw coordinates — are what `/api/gc/init` uses to build
+the circuit.
+
+**The honest privacy trade-off — read this before claiming anything about
+VEIL's privacy in a report or demo:**
+
+- `/api/candidates` **does** receive your location over the network.
+- The server coarsens it to a **~1.1km × 1.1km grid cell** (rounded to 2
+  decimal places) before using or logging it, regardless of what precision
+  was actually sent — so it never stores or acts on your exact position.
+- `/api/gc/init` and `/api/gc/resolve` are **unaffected** — they still
+  reject raw coordinates entirely, coarse or exact, and only ever see
+  `{k, categories, candidateIds}` / `{sessionId, resultIds}`.
+- **Correct claim:** "the secure computation never receives any location
+  data." **Incorrect claim:** "the server never learns anything about your
+  location" — it learns your approximate ~1.1km area during candidate
+  discovery. Say the true version.
+
+---
+
+## ⏱️ Benchmark Methodology (Phase 5)
+
+Two ways to measure real (never hardcoded or estimated) plain-vs-secure
+timings:
+
+1. **`POST /api/benchmark`** — a dedicated evaluation endpoint, separate from
+   the live query path above (the app's real search flow never calls it).
+   It measures candidate discovery, plain kNN, and circuit garbling
+   server-side, and returns those real numbers plus dataset/candidate sizes.
+   It does **not** measure client-side circuit *evaluation* time — see why
+   in the comment above that route in `backend/server.js` (measuring it
+   there would mean the server evaluating its own circuit, which defeats the
+   property being benchmarked).
+
+2. **`node test/benchmark.mjs [--lat X --lng Y --k N --categories a,b]`** —
+   a deterministic, reproducible, full-pipeline benchmark: candidate
+   discovery → plain kNN → garbling → an independent client-side evaluation
+   (Node's `crypto.webcrypto`, the same SubtleCrypto interface a browser
+   exposes — not a literal browser, see the file's header comment) → resolve
+   → Merkle verification, all timed with real `performance.now()` calls. It
+   tries live OSM data first and falls back to a small, clearly-labelled
+   synthetic fixture if that's unavailable, and says which one it used.
+
+**Why plain and secure timings aren't directly comparable as "workloads":**
+plain kNN searches the *entire* category-filtered dataset; secure VEIL kNN
+computes only over the location-aware *candidate* subset
+(`MAX_SECURE_POIS`, default 30). Both endpoints/scripts report both dataset
+sizes explicitly for this reason — don't quote a speed ratio without also
+quoting the two sizes it was measured at.
+
+**Correctness check performed by both:** plain kNN run over the *same*
+candidate set the secure circuit used, compared to the secure circuit's
+own output — not a post-hoc plaintext re-sort of the secure results, which
+would defeat the purpose of the secure computation.
 
 ---
 

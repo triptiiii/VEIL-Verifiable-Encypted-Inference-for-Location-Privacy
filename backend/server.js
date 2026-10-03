@@ -398,6 +398,100 @@ app.get("/api/ot/benchmark", async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/benchmark  — PHASE 5: PLAIN vs SECURE kNN BENCHMARK
+//
+// A BENCHMARKING/EVALUATION UTILITY — deliberately separate from the live
+// query path. The app's actual search flow (App.jsx / gcProtocol.js) never
+// calls this endpoint and is completely unaffected by it; it still uses
+// /api/candidates → /api/gc/init → LOCAL browser evaluation → /api/gc/resolve
+// exactly as before.
+//
+// Sending raw coordinates here is a deliberate exception, same rationale as
+// the existing /api/knn/plain baseline and /api/ot/benchmark above: this
+// endpoint exists to produce real, reproducible timing numbers for the
+// project report, not to serve a real user's private query.
+//
+// It reuses the EXISTING VEILSession methods (getLocationAwareCandidates,
+// plainQuery, buildSecureCircuit) rather than re-implementing any ranking or
+// garbling logic here.
+//
+// IMPORTANT — what this endpoint deliberately does NOT measure: the client's
+// secure circuit EVALUATION time (SubtleCrypto AES-CBC in the browser).
+// Measuring that here would require either (a) the server evaluating its
+// own garbled circuit, which trivially defeats the privacy property being
+// benchmarked since the server already has the coordinates from this
+// request, or (b) a real browser. For a genuine, deterministic, full-pipeline
+// number — candidate discovery + garbling + an independent client-side
+// evaluation + resolve + Merkle verification — run `node test/benchmark.mjs`
+// (Node + WebCrypto, same technique as test/run_tests.mjs), or read the
+// in-app timing breakdown after a real browser query.
+// ─────────────────────────────────────────────────────────────────────────────
+
+app.post("/api/benchmark", async (req, res) => {
+  try {
+    const { latitude, longitude, k = 5, categories = null } = req.body;
+    if (typeof latitude !== "number" || typeof longitude !== "number") {
+      return res.status(400).json({
+        error: "latitude and longitude (numbers) are required for benchmarking.",
+        code: "LOCATION_REQUIRED",
+      });
+    }
+
+    const session = await ensureSession();
+    const filteredDatasetSize = (categories
+      ? session.pois.filter((p) => categories.includes(p.category))
+      : session.pois
+    ).length;
+
+    let t = performance.now();
+    const candidateResult = session.getLocationAwareCandidates(latitude, longitude, categories);
+    const candidateDiscoveryMs = +(performance.now() - t).toFixed(2);
+
+    t = performance.now();
+    const plainResult = session.plainQuery(latitude, longitude, k, categories);
+    const plainQueryMs = +(performance.now() - t).toFixed(2);
+
+    t = performance.now();
+    const { dataset, garbleMs, bundle } =
+      session.buildSecureCircuit(k, categories, candidateResult.candidateIds);
+    const circuitBuildRoundtripMs = +(performance.now() - t).toFixed(2);
+
+    res.json({
+      success: true,
+      query: { k, categories },
+      workloadNote:
+        `Plain kNN searched the FULL category-filtered dataset (${filteredDatasetSize} POIs). ` +
+        `Secure VEIL kNN computed over the location-aware candidate set only (${dataset.length} POIs). ` +
+        `These are NOT equal-sized workloads — see README "Benchmark Methodology" before comparing ` +
+        `the two timings directly.`,
+      candidateDiscovery: {
+        timeMs: candidateDiscoveryMs,
+        candidateCount: candidateResult.candidateIds.length,
+        coarsenedTo: { latitude: candidateResult.coarseLat, longitude: candidateResult.coarseLng },
+      },
+      plainKNN: {
+        timeMs: plainQueryMs,
+        internalLatencyMs: parseFloat(plainResult.latencyMs),
+        datasetSize: filteredDatasetSize,
+        resultIds: plainResult.results.map((p) => p.id),
+      },
+      secureCircuitGarbling: {
+        timeMs: parseFloat(garbleMs),
+        roundtripMs: circuitBuildRoundtripMs,
+        candidateSetSize: dataset.length,
+        gateCount: bundle.numGates,
+      },
+      note:
+        "Secure circuit EVALUATION time (browser SubtleCrypto AES-CBC) is intentionally not " +
+        "measured here — see the comment above this route in server.js for why, and use " +
+        "`node test/benchmark.mjs` or the in-app timing breakdown for that number.",
+    });
+  } catch (err) {
+    sendError(res, "/api/benchmark", err);
+  }
+});
+
 app.get("/api/poi/:id", async (req, res) => {
   try {
     const session = await ensureSession();

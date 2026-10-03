@@ -332,6 +332,78 @@ try {
   check("live server reachable on :3001 (section 10)", false, err.message);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PHASE 5 — PLAIN vs SECURE BENCHMARK
+// ═══════════════════════════════════════════════════════════════════════════
+
+section("11. Benchmark — runBenchmark() core (deterministic, in-process)");
+{
+  const { runBenchmark } = await import("./benchmark.mjs");
+  const result = await runBenchmark(geoSession, {
+    lat: POINT_A.latitude, lng: POINT_A.longitude, k: 2, categories: ["hospital"], candidateLimit: 2,
+  });
+
+  const numericTimingFields = [
+    "candidateDiscoveryMs", "plainQueryMs", "secureCircuitGarbleMs",
+    "secureCircuitGarbleRoundtripMs", "secureClientEncodeMs", "secureClientEvalMs",
+    "secureResolveMs", "merkleVerifyMs", "secureTotalMs",
+  ];
+  const allNumeric = numericTimingFields.every(
+    (f) => typeof result.timings[f] === "number" && !Number.isNaN(result.timings[f])
+  );
+  check("benchmark produces a numeric value for every timing field", allNumeric, JSON.stringify(result.timings));
+
+  const allNonNegative = numericTimingFields.every((f) => result.timings[f] >= 0);
+  check("all benchmark timings are >= 0", allNonNegative);
+
+  check(
+    "secure top-k agrees with plain top-k over the SAME candidate set",
+    result.results.secureAgreesWithPlainOverSameCandidates === true,
+    `plainOverCandidates=${JSON.stringify(result.results.plainOverCandidatesIds)} secure=${JSON.stringify(result.results.secureIds)}`
+  );
+  check("benchmark's Merkle verification passes", result.results.merkleAllVerified === true);
+  check(
+    "benchmark candidate ids are consistent with getLocationAwareCandidates()",
+    result.datasetSizes.candidateSetSize === 2, // k=2 categories=hospital near A → GEO_hA1, GEO_hA2
+    `candidateSetSize=${result.datasetSizes.candidateSetSize}`
+  );
+  check(
+    "workload-size difference between plain and secure is explicitly labelled, not hidden",
+    typeof result.workloadNote === "string" && result.workloadNote.length > 0
+  );
+}
+
+section("12. Benchmark — live /api/benchmark endpoint");
+try {
+  const base = "http://localhost:3001";
+  const res = await fetch(`${base}/api/benchmark`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ latitude: 12.9716, longitude: 77.5946, k: 3, categories: null }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (body.code === "DATASET_UNAVAILABLE") {
+    console.log("  \u26a0 SKIPPED: POST /api/benchmark — sandbox cannot reach overpass-api.de, not a code defect.");
+  } else {
+    check("POST /api/benchmark succeeds", res.ok, `status ${res.status}`);
+    check(
+      "response has numeric timeMs fields for candidateDiscovery/plainKNN/secureCircuitGarbling",
+      typeof body.candidateDiscovery?.timeMs === "number" &&
+      typeof body.plainKNN?.timeMs === "number" &&
+      typeof body.secureCircuitGarbling?.timeMs === "number",
+      JSON.stringify(body)
+    );
+    check("response includes an explicit workload-size note", typeof body.workloadNote === "string" && body.workloadNote.length > 0);
+  }
+
+  const missing = await fetch(`${base}/api/benchmark`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ k: 3 }),
+  });
+  check("POST /api/benchmark REQUIRES latitude/longitude", missing.status === 400, `status ${missing.status}`);
+} catch (err) {
+  check("live server reachable on :3001 (section 12)", false, err.message);
+}
+
 // ── Summary ──────────────────────────────────────────────────────────────
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail > 0 ? 1 : 0);
