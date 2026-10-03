@@ -22,6 +22,7 @@ export default function ControlPanel({
   onRequestLocation, onRunQuery, queryLoading,
   datasetMeta, datasetLoading, onRefreshDataset,
 }) {
+  const noCategoriesSelected = categories.length === 0;
   return (
     <div className="flex flex-col h-full">
 
@@ -197,11 +198,17 @@ export default function ControlPanel({
 
       {/* Run Query */}
       <div className="p-4 mt-auto">
+        {noCategoriesSelected && (
+          <div className="text-xs text-yellow-400 bg-yellow-900/20 border border-yellow-700/30 rounded-lg p-2 mb-2">
+            Select at least one category to search.
+          </div>
+        )}
         <button
           onClick={onRunQuery}
-          disabled={queryLoading}
+          disabled={queryLoading || noCategoriesSelected}
+          title={noCategoriesSelected ? 'Select at least one category first' : undefined}
           className={`w-full py-3 rounded-xl font-semibold text-sm transition-all flex items-center justify-center gap-2 ${
-            queryLoading
+            queryLoading || noCategoriesSelected
               ? 'bg-veil-border text-veil-muted cursor-not-allowed'
               : 'bg-gradient-to-r from-veil-accent to-veil-teal text-veil-bg hover:brightness-110 active:scale-95 shadow-lg shadow-veil-accent/20'
           }`}

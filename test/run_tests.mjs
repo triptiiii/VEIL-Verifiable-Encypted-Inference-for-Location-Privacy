@@ -404,6 +404,78 @@ try {
   check("live server reachable on :3001 (section 12)", false, err.message);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PHASE 6 — CLIENT-SIDE MERKLE VERIFICATION (frontend/src/services/merkleVerify.js)
+//
+// Previously, the UI displayed resolveData.verificationResult — a value the
+// SERVER computed and self-reported — under a "Merkle Verification" badge,
+// while the Protocol panel's copy claimed the CLIENT verifies each result.
+// That wasn't true. merkleVerify.js makes it true: it independently
+// recomputes leaf hashes and proof paths via the browser's own SubtleCrypto.
+// These tests exercise that module directly (same Node+WebCrypto technique
+// used throughout this file), including a deliberately-tampered case — the
+// tamper-detection test this project's own paper flagged as never having
+// been performed anywhere in the codebase.
+// ═══════════════════════════════════════════════════════════════════════════
+
+section("13. Client-side Merkle verification (merkleVerify.js)");
+{
+  const { verifyMerkleResultsClientSide } = await import(
+    "../frontend/src/services/merkleVerify.js"
+  );
+
+  const { candidateIds } = geoSession.getLocationAwareCandidates(
+    POINT_A.latitude, POINT_A.longitude, ["hospital"], 2
+  );
+  const { dataset } = geoSession.buildSecureCircuit(2, ["hospital"], candidateIds);
+  const resultIds = dataset.map((p) => p.id);
+  const { pois, merkleProofs } = geoSession.resolveSecureQuery(dataset, resultIds);
+
+  // Genuine case: real pois + real proofs + real root → must verify true,
+  // computed entirely independently of the server's own verifyResults().
+  const goodResult = await verifyMerkleResultsClientSide(pois, merkleProofs, geoSession.merkleRoot);
+  check(
+    "genuine result set verifies successfully, independently, in-browser (WebCrypto)",
+    goodResult.valid === true && goodResult.computedClientSide === true,
+    JSON.stringify(goodResult)
+  );
+  check(
+    "every individual detail entry is valid for the genuine case",
+    goodResult.details.every((d) => d.valid === true)
+  );
+
+  // Deliberate tampering: corrupt one returned POI's name after proofs were
+  // generated for the real one — the recomputed leaf hash must then diverge
+  // from the server-issued leafHash, and verification must fail. This is
+  // the tamper-detection test that was previously only claimed, never run.
+  const tamperedPois = pois.map((p, i) => (i === 0 ? { ...p, name: p.name + " (TAMPERED)" } : p));
+  const tamperedResult = await verifyMerkleResultsClientSide(tamperedPois, merkleProofs, geoSession.merkleRoot);
+  check(
+    "tampering a returned POI's data is detected (verification fails)",
+    tamperedResult.valid === false && tamperedResult.details[0].valid === false,
+    JSON.stringify(tamperedResult)
+  );
+  check(
+    "untampered POIs in the same batch still verify correctly",
+    tamperedResult.details.slice(1).every((d) => d.valid === true)
+  );
+
+  // Deliberate root corruption: same genuine proofs, wrong root → must fail.
+  const wrongRootResult = await verifyMerkleResultsClientSide(
+    pois, merkleProofs, "0".repeat(geoSession.merkleRoot.length)
+  );
+  check("a mismatched root is rejected", wrongRootResult.valid === false);
+
+  // Cross-check against the server's own verifyResults() for the genuine
+  // case — both must agree when nothing has been tampered with.
+  const { verifyResults } = await import("../backend/crypto/merkle/merkleTree.js");
+  const serverResult = verifyResults(merkleProofs, pois, geoSession.merkleRoot);
+  check(
+    "client-side (WebCrypto) and server-side (Node crypto) verification agree on the genuine case",
+    goodResult.valid === serverResult.valid
+  );
+}
+
 // ── Summary ──────────────────────────────────────────────────────────────
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail > 0 ? 1 : 0);

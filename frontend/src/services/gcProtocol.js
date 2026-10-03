@@ -14,6 +14,8 @@
  *   ECDH OT is the production upgrade for cryptographic choice-hiding.
  */
 
+import { verifyMerkleResultsClientSide } from './merkleVerify.js';
+
 const LABEL_BYTES = 16;
 const COORD_BITS  = 32;
 const SCALE       = 1_000_000;
@@ -243,7 +245,22 @@ export async function runSecureKNN(lat, lng, k, categories, onProgress = () => {
   timings.resolveMs = (performance.now() - t).toFixed(2);
   onProgress({ step: 6, label: 'POI data + Merkle proofs received', done: true });
 
-  onProgress({ step: 7, label: 'Computing distances (client GPS)', done: false });
+  // Independent, in-browser re-verification of the Merkle proofs — does NOT
+  // just trust resolveData.verificationResult (server-self-reported). See
+  // services/merkleVerify.js for why this exists.
+  onProgress({ step: 7, label: 'Verifying Merkle proofs locally', done: false });
+  t = performance.now();
+  const clientVerification = await verifyMerkleResultsClientSide(
+    resolveData.pois || [], resolveData.merkleProofs || [], gcBundle.merkleRoot
+  );
+  timings.merkleMs = (performance.now() - t).toFixed(2);
+  onProgress({
+    step: 7,
+    label: clientVerification.valid ? 'All proofs verified locally' : 'Merkle verification FAILED',
+    done: true,
+  });
+
+  onProgress({ step: 8, label: 'Computing distances (client GPS)', done: false });
   t = performance.now();
   const results = (resolveData.pois || [])
     .map(poi => ({
@@ -259,9 +276,9 @@ export async function runSecureKNN(lat, lng, k, categories, onProgress = () => {
   // the client-side wall-clock phases.
   timings.totalMs = [
     timings.encodeMs, timings.candidatesMs, timings.circuitFetchMs, timings.otMs,
-    timings.evalMs, timings.resolveMs, timings.distanceMs,
+    timings.evalMs, timings.resolveMs, timings.merkleMs, timings.distanceMs,
   ].reduce((s, v) => s + parseFloat(v || 0), 0).toFixed(2);
-  onProgress({ step: 7, label: 'Results ready', done: true });
+  onProgress({ step: 8, label: 'Results ready', done: true });
 
   return {
     mode: 'secure',
@@ -269,7 +286,8 @@ export async function runSecureKNN(lat, lng, k, categories, onProgress = () => {
     timings,
     merkleRoot:          gcBundle.merkleRoot,
     merkleProofs:        resolveData.merkleProofs,
-    verificationResult:  resolveData.verificationResult,
+    verificationResult:  resolveData.verificationResult, // server-reported (kept for reference/debugging)
+    clientVerification:  clientVerification,              // independently recomputed in-browser — prefer this in UI
     circuitStats: {
       numGates:   gcBundle.numGates,
       numPOIs:    gcBundle.numPOIs,

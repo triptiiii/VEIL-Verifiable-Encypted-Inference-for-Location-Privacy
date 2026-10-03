@@ -29,29 +29,55 @@ function TimingBar({ label, value, total, color = '#00c6ff' }) {
   )
 }
 
-function VerificationBadge({ valid }) {
+function VerificationBadge({ valid, clientSide }) {
   return (
-    <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono border ${
-      valid
-        ? 'bg-veil-green/10 border-green-700/40 text-veil-green'
-        : 'bg-red-900/20 border-red-800/40 text-red-400'
-    }`}>
+    <div
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono border ${
+        valid
+          ? 'bg-veil-green/10 border-green-700/40 text-veil-green'
+          : 'bg-red-900/20 border-red-800/40 text-red-400'
+      }`}
+      title={clientSide
+        ? 'Recomputed independently in this browser via SHA-256 — not just trusting the server\u2019s self-report.'
+        : 'Server-reported result (not independently re-verified).'}
+    >
       {valid ? '✓ Merkle Verified' : '✗ Proof Failed'}
+      {clientSide && <span className="opacity-60">· in-browser</span>}
     </div>
   )
 }
 
-export default function ResultPanel({ results, loading, error, meta, userLocation, mode }) {  if (loading) {
+export default function ResultPanel({
+  results, loading, error, meta, userLocation, mode,
+  protocolSteps = [], hasSearched = false, selectedId = null, onSelectResult = () => {},
+}) {
+  if (loading) {
+    // Live, accurate per-stage progress (Phase 6 — "do not falsely claim
+    // every stage happens on the server"). Falls back to a generic label
+    // only before the first real step has arrived.
+    const lastStep = protocolSteps[protocolSteps.length - 1]
     return (
-      <div className="flex flex-col items-center justify-center h-48 gap-3">
+      <div className="flex flex-col items-center justify-center h-48 gap-3 px-6">
         <div className="flex gap-2">
           <div className="w-2 h-2 rounded-full bg-veil-accent load-dot" />
           <div className="w-2 h-2 rounded-full bg-veil-accent load-dot" />
           <div className="w-2 h-2 rounded-full bg-veil-accent load-dot" />
         </div>
-        <div className="text-xs font-mono text-veil-muted">
-          {mode === 'secure' ? 'Evaluating garbled circuit…' : 'Computing kNN…'}
+        <div className="text-xs font-mono text-veil-muted text-center">
+          {mode === 'secure'
+            ? (lastStep?.label || 'Starting secure computation…')
+            : 'Computing plaintext kNN…'}
         </div>
+        {mode === 'secure' && protocolSteps.length > 0 && (
+          <div className="w-full mt-1 space-y-1">
+            {protocolSteps.slice(-4).map((s, i) => (
+              <div key={i} className="flex items-center gap-2 text-[11px] font-mono">
+                <span className={s.done ? 'text-veil-green' : 'text-veil-accent'}>{s.done ? '✓' : '⟳'}</span>
+                <span className={s.done ? 'text-veil-text/70' : 'text-veil-muted'}>{s.label}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     )
   }
@@ -59,8 +85,9 @@ export default function ResultPanel({ results, loading, error, meta, userLocatio
   if (error) {
     return (
       <div className="p-4">
-        <div className="p-3 rounded-lg bg-red-900/20 border border-red-800/30 text-xs text-red-400 font-mono">
-          Error: {error}
+        <div className="p-3 rounded-lg bg-red-900/20 border border-red-800/30 text-xs text-red-400">
+          <div className="font-mono font-semibold mb-1">⚠ Search failed</div>
+          <div className="font-mono text-red-300/90">{error}</div>
         </div>
       </div>
     )
@@ -70,8 +97,19 @@ export default function ResultPanel({ results, loading, error, meta, userLocatio
     return (
       <div className="flex flex-col items-center justify-center h-48 gap-2 text-veil-muted">
         <div className="text-3xl opacity-20">◎</div>
-        <div className="text-xs font-mono">No results yet</div>
-        <div className="text-xs text-center px-6">Get your location and run a query to see nearest POIs</div>
+        {hasSearched ? (
+          <>
+            <div className="text-xs font-mono">No matching POIs found</div>
+            <div className="text-xs text-center px-6">
+              Nothing nearby matched your selected categories. Try a larger k, different categories, or a different location.
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="text-xs font-mono">No results yet</div>
+            <div className="text-xs text-center px-6">Get your location and run a query to see nearest POIs</div>
+          </>
+        )}
       </div>
     )
   }
@@ -79,9 +117,16 @@ export default function ResultPanel({ results, loading, error, meta, userLocatio
   const timings = meta?.timings
   const totalMs = timings ? parseFloat(timings.totalMs || Object.values(timings).reduce((s, v) => s + parseFloat(v || 0), 0)) : 0
 
+  // Prefer the independently-recomputed, in-browser verification
+  // (meta.clientVerification — see services/merkleVerify.js) over the
+  // server-self-reported one. Plain mode has neither; secure mode always
+  // has clientVerification once a query completes.
+  const verification = meta?.clientVerification || meta?.verificationResult
+  const verificationIsClientSide = !!meta?.clientVerification
+
   // Per-result Merkle verification lookup (details[].poiId -> {valid, reason})
   const verificationByPoiId = new Map(
-    (meta?.verificationResult?.details || []).map((d) => [d.poiId, d])
+    (verification?.details || []).map((d) => [d.poiId, d])
   )
 
   return (
@@ -95,8 +140,8 @@ export default function ResultPanel({ results, loading, error, meta, userLocatio
         }`}>
           {mode === 'secure' ? '🔒 Secure GC' : '⚠ Plaintext'}
         </div>
-        {meta?.verificationResult && (
-          <VerificationBadge valid={meta.verificationResult.valid} />
+        {verification && (
+          <VerificationBadge valid={verification.valid} clientSide={verificationIsClientSide} />
         )}
       </div>
 
@@ -105,10 +150,19 @@ export default function ResultPanel({ results, loading, error, meta, userLocatio
         <div className="veil-label">k Nearest POIs</div>
         {results.map((poi, idx) => {
           const meta2 = CATEGORY_META[poi.category] || CATEGORY_META.default
+          const isSelected = selectedId === poi.id
           return (
             <div
               key={poi.id}
-              className="p-3 rounded-lg border border-veil-border bg-veil-card hover:border-veil-muted/40 transition-colors animate-slideUp"
+              onClick={() => onSelectResult(isSelected ? null : poi.id)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onSelectResult(isSelected ? null : poi.id) }}
+              className={`p-3 rounded-lg border transition-colors animate-slideUp cursor-pointer ${
+                isSelected
+                  ? 'border-veil-accent bg-veil-accent/10 shadow-[0_0_0_1px_rgba(0,198,255,0.4)]'
+                  : 'border-veil-border bg-veil-card hover:border-veil-muted/40'
+              }`}
               style={{ animationDelay: `${idx * 60}ms` }}
             >
               <div className="flex items-start gap-2.5">

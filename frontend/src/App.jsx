@@ -44,6 +44,8 @@ export default function App() {
   const [queryLoading, setQueryLoading] = useState(false);
   const [queryError, setQueryError] = useState(null);
   const [lastQueryMeta, setLastQueryMeta] = useState(null);
+  const [hasSearched, setHasSearched] = useState(false);
+  const [selectedResultId, setSelectedResultId] = useState(null);
 
   // Step-by-step progress for the secure protocol
   const [protocolSteps, setProtocolSteps] = useState([]);
@@ -98,11 +100,18 @@ export default function App() {
         });
         setLocationStatus("ready");
       },
-      () => {
-        // Fallback to Bengaluru centre — clearly labelled
+      (err) => {
+        // Fallback to Bengaluru centre — clearly labelled, with a message
+        // that distinguishes *why* (permission denied vs. unavailable vs.
+        // timed out), since those call for different user action.
+        const reason = {
+          1: "GPS permission denied",
+          2: "GPS position unavailable",
+          3: "GPS request timed out",
+        }[err?.code] || "GPS unavailable";
         setUserLocation({ ...DEFAULT_LOCATION, accuracy: null, simulated: true });
         setLocationStatus("ready");
-        setLocationError("GPS unavailable — using central Bengaluru as demo location.");
+        setLocationError(`${reason} — using central Bengaluru as a demo location instead.`);
       },
       { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
     );
@@ -110,12 +119,23 @@ export default function App() {
 
   // ── Query ────────────────────────────────────────────────────────────────
   const runQuery = useCallback(async () => {
+    // A category list of [] means "nothing selected", not "search everything" —
+    // previously this fell through to `categories.length > 0 ? categories : null`,
+    // and `null` means "all categories" server-side, so deselecting every
+    // category silently searched every category instead of none. Guard it here.
+    if (categories.length === 0) {
+      setQueryError("Select at least one category before searching.");
+      return;
+    }
+
     const loc = userLocation || DEFAULT_LOCATION;
     setQueryLoading(true);
     setQueryError(null);
     setResults([]);
     setProtocolSteps([]);
     setLastQueryMeta(null);
+    setSelectedResultId(null);
+    setHasSearched(true);
 
     try {
       if (mode === "secure") {
@@ -128,7 +148,7 @@ export default function App() {
           loc.latitude,   // ← stays in gcProtocol.js, never in fetch body
           loc.longitude,  // ← stays in gcProtocol.js, never in fetch body
           k,
-          categories.length > 0 ? categories : null,
+          categories,
           (step) => setProtocolSteps((prev) => [...prev, step])
         );
         setResults(data.results || []);
@@ -141,7 +161,7 @@ export default function App() {
           latitude: loc.latitude,   // ← explicitly sent (plain mode = non-private)
           longitude: loc.longitude,
           k,
-          categories: categories.length > 0 ? categories : null,
+          categories,
         });
         setResults(data.results || []);
         setLastQueryMeta({ mode: "plaintext", ...data });
@@ -209,6 +229,8 @@ export default function App() {
               results={results}
               categories={categories}
               loading={queryLoading}
+              selectedId={selectedResultId}
+              onSelectResult={setSelectedResultId}
             />
           ) : (
             <ThreeScene
@@ -250,6 +272,9 @@ export default function App() {
                 meta={lastQueryMeta}
                 mode={mode}
                 protocolSteps={protocolSteps}
+                hasSearched={hasSearched}
+                selectedId={selectedResultId}
+                onSelectResult={setSelectedResultId}
               />
             )}
             {activeTab === "complexity" && (

@@ -18,11 +18,12 @@ function formatDist(m) {
   return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${m} m`
 }
 
-export default function MapView({ userLocation, dataset, results, categories, loading }) {
+export default function MapView({ userLocation, dataset, results, categories, loading, selectedId, onSelectResult }) {
   const mapRef = useRef(null)
   const mapInstanceRef = useRef(null)
   const markersRef = useRef([])
   const resultMarkersRef = useRef([])
+  const resultMarkerByIdRef = useRef(new Map()) // poi.id -> { marker, buildIcon(selected) }
   const userMarkerRef = useRef(null)
   const circleRef = useRef(null)
 
@@ -139,46 +140,53 @@ export default function MapView({ userLocation, dataset, results, categories, lo
 
     resultMarkersRef.current.forEach(m => m.remove())
     resultMarkersRef.current = []
+    resultMarkerByIdRef.current.clear()
 
     results.forEach((poi, idx) => {
       const color = CATEGORY_COLORS[poi.category] || CATEGORY_COLORS.default
       const icon = CATEGORY_ICONS[poi.category] || '📍'
-      const size = Math.max(32, 44 - idx * 2)
+      const baseSize = Math.max(32, 44 - idx * 2)
 
-      const markerIcon = L.divIcon({
-        className: '',
-        html: `
-          <div style="
-            width:${size}px;height:${size}px;
-            background:${color}22;
-            border:2px solid ${color};
-            border-radius:50% 50% 50% 0;
-            transform:rotate(-45deg);
-            display:flex;align-items:center;justify-content:center;
-            box-shadow:0 0 12px ${color}66;
-            position:relative;
-          ">
-            <div style="transform:rotate(45deg);font-size:${size * 0.4}px">${icon}</div>
+      // Factored out so the selection-sync effect below can rebuild just
+      // this one marker's icon (selected = larger, brighter ring) without
+      // touching any other marker or re-running this whole rebuild effect.
+      const buildIcon = (isSelected) => {
+        const size = isSelected ? baseSize + 10 : baseSize
+        return L.divIcon({
+          className: '',
+          html: `
             <div style="
-              position:absolute;
-              top:-8px;right:-8px;
-              width:18px;height:18px;
-              background:#0b1120;
-              border:1px solid ${color};
-              border-radius:50%;
-              font-size:10px;
-              color:${color};
+              width:${size}px;height:${size}px;
+              background:${color}${isSelected ? '44' : '22'};
+              border:${isSelected ? 3 : 2}px solid ${color};
+              border-radius:50% 50% 50% 0;
+              transform:rotate(-45deg);
               display:flex;align-items:center;justify-content:center;
-              font-family:monospace;font-weight:bold;
-              transform:rotate(45deg);
-            ">${idx + 1}</div>
-          </div>
-        `,
-        iconSize: [size, size],
-        iconAnchor: [size / 4, size],
-      })
+              box-shadow:0 0 ${isSelected ? 22 : 12}px ${color}${isSelected ? 'aa' : '66'};
+              position:relative;
+            ">
+              <div style="transform:rotate(45deg);font-size:${size * 0.4}px">${icon}</div>
+              <div style="
+                position:absolute;
+                top:-8px;right:-8px;
+                width:18px;height:18px;
+                background:#0b1120;
+                border:1px solid ${color};
+                border-radius:50%;
+                font-size:10px;
+                color:${color};
+                display:flex;align-items:center;justify-content:center;
+                font-family:monospace;font-weight:bold;
+                transform:rotate(45deg);
+              ">${idx + 1}</div>
+            </div>
+          `,
+          iconSize: [size, size],
+          iconAnchor: [size / 4, size],
+        })
+      }
 
-      const m = L.marker([poi.latitude, poi.longitude], { icon: markerIcon, zIndexOffset: 500 - idx })
+      const m = L.marker([poi.latitude, poi.longitude], { icon: buildIcon(false), zIndexOffset: 500 - idx })
         .addTo(map)
         .bindPopup(`
           <div style="font-family:Inter;min-width:180px">
@@ -196,7 +204,12 @@ export default function MapView({ userLocation, dataset, results, categories, lo
             ${poi.privacyMode === 'secure' ? `<div style="font-size:10px;margin-top:6px;color:#00e5c0">🔒 Result from secure circuit</div>` : ''}
           </div>
         `)
+
+      // Marker → result card sync (Phase 6: map ↔ result interaction)
+      m.on('click', () => onSelectResult?.(poi.id))
+
       resultMarkersRef.current.push(m)
+      resultMarkerByIdRef.current.set(poi.id, { marker: m, buildIcon, latlng: [poi.latitude, poi.longitude] })
 
       // Draw line from user to result
       if (userLocation) {
@@ -217,6 +230,32 @@ export default function MapView({ userLocation, dataset, results, categories, lo
       map.fitBounds(bounds, { padding: [60, 60] })
     }
   }, [results, userLocation])
+
+  // ── Result-card → map sync: highlight + pan/zoom to the selected marker ────
+  // (Phase 6: map ↔ result interaction.) Tracks the previously-selected id
+  // itself so it can revert that one marker's icon without touching any
+  // other marker or re-running the full rebuild effect above.
+  const prevSelectedRef = useRef(null)
+  useEffect(() => {
+    const map = mapInstanceRef.current
+    if (!map) return
+
+    const prevId = prevSelectedRef.current
+    if (prevId && prevId !== selectedId) {
+      const prevEntry = resultMarkerByIdRef.current.get(prevId)
+      if (prevEntry) prevEntry.marker.setIcon(prevEntry.buildIcon(false))
+    }
+
+    if (selectedId) {
+      const entry = resultMarkerByIdRef.current.get(selectedId)
+      if (entry) {
+        entry.marker.setIcon(entry.buildIcon(true))
+        map.panTo(entry.latlng, { animate: true })
+        entry.marker.openPopup()
+      }
+    }
+    prevSelectedRef.current = selectedId
+  }, [selectedId])
 
   return (
     <div className="relative w-full h-full scanlines">
